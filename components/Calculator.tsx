@@ -24,19 +24,15 @@ const Calculator: React.FC = () => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
 
-    if (!process.env.API_KEY) {
-      alert("API_KEY가 설정되지 않았습니다. Vercel 환경 변수를 확인해주세요.");
-      return;
-    }
-
     setIsSearching(true);
     setCurrentStep(Step.LOADING);
     
     try {
+      // 새로운 인스턴스 생성 (최신 API 키 반영 보장)
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 정확한 도로명 주소와 그 주소에 있는 아파트 단지 리스트를 찾아줘.`,
+        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 정확한 도로명 주소와 그 주소에 있는 아파트 단지 리스트를 찾아줘. 검색 결과가 없으면 apartments에 빈 배열을 반환해.`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
@@ -62,10 +58,17 @@ const Calculator: React.FC = () => {
         setCurrentStep(Step.APARTMENT_LIST);
       }
     } catch (error: any) {
-      console.error("Search Error Detail:", error);
-      const errorMsg = error.message?.includes("403") 
-        ? "API 키의 권한이 부족하거나(Google Search 미지원) 위치 제한이 있습니다." 
-        : "검색 서버와 연결이 원활하지 않습니다. 잠시 후 다시 시도해 주세요.";
+      console.error("Gemini Search Error:", error);
+      let errorMsg = "검색 중 오류가 발생했습니다. ";
+      
+      if (error.message?.includes("API key")) {
+        errorMsg += "\n- Vercel 환경 변수에 'API_KEY'가 올바른지 확인하고 'Redeploy'를 진행했는지 확인해 주세요.";
+      } else if (error.message?.includes("403")) {
+        errorMsg += "\n- API 키에 Google Search 기능 권한이 활성화되어 있는지 확인해 주세요.";
+      } else {
+        errorMsg += "\n- 일시적인 네트워크 오류일 수 있으니 잠시 후 다시 시도해 주세요.";
+      }
+      
       alert(errorMsg);
       setCurrentStep(Step.LOCATION);
     } finally {
@@ -81,7 +84,7 @@ const Calculator: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호의 평수(전용면적 또는 공급면적) 정보를 알려줘.`,
+        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호의 정확한 평수(전용면적 또는 공급면적) 정보를 알려줘.`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
@@ -112,6 +115,7 @@ const Calculator: React.FC = () => {
       setCurrentStep(Step.RESULT);
     } catch (error) {
       console.error("Analyze Error:", error);
+      // 에러 시 기본 평수(33)로 진행하여 사용자 경험 유지
       setSelectedApt({
         name: selectedAptName, pyeong: 33, address: addressInfo.fullAddress,
         buildingNo, unitNo, isSimple: false
