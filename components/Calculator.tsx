@@ -19,50 +19,54 @@ const Calculator: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [sources, setSources] = useState<{title?: string, uri?: string}[]>([]);
 
-  // 1. AI 기반 통합 주소 및 아파트 검색 (Daum API 대체)
+  // 1. AI 기반 통합 주소 및 아파트 검색
   const handleAddressSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
+
+    if (!process.env.API_KEY) {
+      alert("API_KEY가 설정되지 않았습니다. Vercel 환경 변수를 확인해주세요.");
+      return;
+    }
 
     setIsSearching(true);
     setCurrentStep(Step.LOADING);
     
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `사용자가 입력한 주소/아파트명 '${searchQuery}'를 바탕으로 정보를 찾아줘.
-      1. 해당 주소의 정확한 '도로명 주소'를 파악할 것.
-      2. 해당 주소 혹은 지역에 위치한 '아파트 단지명'들을 리스트업 할 것.
-      3. 만약 입력한 곳이 아파트가 아니거나 검색 결과가 없다면 'NONE'이라고 답할 것.
-      
-      결과는 반드시 JSON 형식으로만 응답해:
-      {
-        "fullAddress": "정제된 도로명 주소",
-        "apartments": ["단지명1", "단지명2", "단지명3"]
-      }
-      검색 결과가 없으면 {"fullAddress": "NONE", "apartments": []} 형식으로 응답할 것.`;
-
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
+        model: 'gemini-3-pro-preview',
+        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 정확한 도로명 주소와 그 주소에 있는 아파트 단지 리스트를 찾아줘.`,
         config: { 
           tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              fullAddress: { type: Type.STRING },
+              apartments: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["fullAddress", "apartments"]
+          }
         }
       });
 
       const result = JSON.parse(response.text || "{}");
       
-      if (!result.apartments || result.apartments.length === 0 || result.fullAddress === "NONE") {
-        alert("죄송합니다. 해당 주소에는 견적 가능한 아파트가 조회되지 않습니다.");
+      if (!result.apartments || result.apartments.length === 0) {
+        alert("해당 검색어와 일치하는 아파트 단지를 찾을 수 없습니다. 평수로 계산하기를 이용해 주세요.");
         setCurrentStep(Step.LOCATION);
       } else {
         setAddressInfo({ fullAddress: result.fullAddress, apartmentName: '' });
         setApartmentList(result.apartments);
         setCurrentStep(Step.APARTMENT_LIST);
       }
-    } catch (error) {
-      console.error("Search Error:", error);
-      alert("검색 중 오류가 발생했습니다. 평수로 간편 견적을 이용하시거나 잠시 후 다시 시도해 주세요.");
+    } catch (error: any) {
+      console.error("Search Error Detail:", error);
+      const errorMsg = error.message?.includes("403") 
+        ? "API 키의 권한이 부족하거나(Google Search 미지원) 위치 제한이 있습니다." 
+        : "검색 서버와 연결이 원활하지 않습니다. 잠시 후 다시 시도해 주세요.";
+      alert(errorMsg);
       setCurrentStep(Step.LOCATION);
     } finally {
       setIsSearching(false);
@@ -75,26 +79,28 @@ const Calculator: React.FC = () => {
     setSources([]);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `네이버 부동산 정보를 기반으로 다음 아파트의 평형 정보를 분석해줘.
-      주소: ${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호.
-      결과 형식:
-      PYEONG: [공급평수 숫자만]
-      INFO: [창호 특징 요약]`;
-
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: { tools: [{ googleSearch: {} }] }
+        model: 'gemini-3-pro-preview',
+        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호의 평수(전용면적 또는 공급면적) 정보를 알려줘.`,
+        config: { 
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              pyeong: { type: Type.NUMBER, description: "공급 평수 숫자만 (예: 33)" }
+            },
+            required: ["pyeong"]
+          }
+        }
       });
 
-      const text = response.text || "";
-      const pyeongMatch = text.match(/PYEONG:\s*(\d+)/i);
-      const pyeong = pyeongMatch ? parseInt(pyeongMatch[1], 10) : 33;
+      const result = JSON.parse(response.text || "{}");
+      const pyeong = result.pyeong || 33;
 
       const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
       if (groundingChunks) {
-        const extractedSources = groundingChunks.map((chunk: any) => chunk.web).filter((web: any) => web && web.uri);
-        setSources(extractedSources);
+        setSources(groundingChunks.map((c: any) => c.web).filter(Boolean));
       }
 
       setSelectedApt({
@@ -105,6 +111,7 @@ const Calculator: React.FC = () => {
       });
       setCurrentStep(Step.RESULT);
     } catch (error) {
+      console.error("Analyze Error:", error);
       setSelectedApt({
         name: selectedAptName, pyeong: 33, address: addressInfo.fullAddress,
         buildingNo, unitNo, isSimple: false
@@ -160,7 +167,6 @@ const Calculator: React.FC = () => {
           {currentStep === Step.APARTMENT_LIST && (
             <div className="flex flex-col gap-1">
               <span>조회된 단지 목록 중 하나를 선택해 주세요.</span>
-              <span className="text-blue-600 font-bold">아파트가 조회되지 않을 경우 평수로 바로 계산하기로 진행하세요</span>
             </div>
           )}
           {currentStep === Step.SIMPLE_INPUT && "거주하시는 가구의 공급 평수를 선택해 주세요."}
