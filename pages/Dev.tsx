@@ -48,9 +48,7 @@ const Dev: React.FC = () => {
           <div className="mt-12 pt-8 border-t border-gray-100">
             <div className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Partner Brands</div>
             <div className="flex gap-6 grayscale opacity-50">
-              <span className="font-black text-xl italic">KCC</span>
-              <span className="font-black text-xl italic">LX Hausys</span>
-              <span className="font-black text-xl italic">HYUNDAI</span>
+              <span className="font-black text-xl italic">KCC HomeCC</span>
             </div>
           </div>
         </div>

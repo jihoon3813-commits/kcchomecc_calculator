@@ -22,12 +22,12 @@ const Main: React.FC = () => {
           <p className="text-white/70 text-sm">평형대별 데이터 기반으로<br/>즉시 견적 산출</p>
         </div>
         <div className="bg-white/10 backdrop-blur-sm p-6 rounded-2xl border border-white/20 text-center">
-          <div className="text-blue-400 font-bold mb-2">메이저 브랜드</div>
-          <p className="text-white/70 text-sm">KCC, LG, 현대 등<br/>국내 정품 자재 취급</p>
+          <div className="text-blue-400 font-bold mb-2">KCC 정품</div>
+          <p className="text-white/70 text-sm">KCC HomeCC 본사 정품<br/>고성능 창호 자재 취급</p>
         </div>
         <div className="bg-white/10 backdrop-blur-sm p-6 rounded-2xl border border-white/20 text-center">
           <div className="text-blue-400 font-bold mb-2">전문가 상담</div>
-          <p className="text-white/70 text-sm">확인한 견적을 바탕으로<br/>무료 유선 상담 지원</p>
+          <p className="text-white/70 text-sm">확인한 견적을 바탕으로<br/>무료 방문 실측 및 유선 상담</p>
         </div>
       </div>
     </div>
