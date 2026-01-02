@@ -19,20 +19,18 @@ const Calculator: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [sources, setSources] = useState<{title?: string, uri?: string}[]>([]);
 
-  // AI 응답에서 JSON만 안전하게 추출하는 함수
+  // AI 응답에서 JSON만 안전하게 추출하는 유틸리티
   const safeParseJSON = (text: string) => {
     try {
-      // 1. ```json 블록 제거
-      let cleaned = text.replace(/```json|```/g, "").trim();
-      // 2. 혹시 앞뒤에 텍스트가 섞여 있다면 JSON 시작과 끝 위치 확인
-      const startIdx = cleaned.indexOf('{');
-      const endIdx = cleaned.lastIndexOf('}');
-      if (startIdx !== -1 && endIdx !== -1) {
-        cleaned = cleaned.substring(startIdx, endIdx + 1);
+      if (!text) return null;
+      // 마크다운 태그 제거 및 순수 JSON 영역 추출
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        return JSON.parse(match[0]);
       }
-      return JSON.parse(cleaned);
+      return JSON.parse(text);
     } catch (e) {
-      console.error("JSON 파싱 실패. 원문:", text);
+      console.warn("[Gemini JSON Parse Warning] 응답이 JSON 형식이 아닙니다:", text);
       return null;
     }
   };
@@ -46,12 +44,15 @@ const Calculator: React.FC = () => {
     setCurrentStep(Step.LOADING);
     
     try {
-      // 검색 업무에는 속도가 빠르고 안정적인 Flash 모델 권장
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // 유료 계정의 성능을 최대한 활용하기 위해 Pro 모델 사용
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) throw new Error("API_KEY_MISSING");
+
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 실제 도로명 주소와 그 주소 내의 아파트 단지 목록을 JSON으로 알려줘. 
-                  예시: {"fullAddress": "서울특별시 성동구 왕십리로 83-21", "apartments": ["아크로서울포레스트"]}`,
+        model: 'gemini-3-pro-preview',
+        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 실제 도로명 주소와 그 주소 내의 아파트 단지 목록을 JSON으로만 응답해줘. 
+                  형식: {"fullAddress": "주소", "apartments": ["단지명1", "단지명2"]}`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
@@ -66,10 +67,10 @@ const Calculator: React.FC = () => {
         }
       });
 
-      const result = safeParseJSON(response.text || "{}");
+      const result = safeParseJSON(response.text || "");
       
       if (!result || !result.apartments || result.apartments.length === 0) {
-        alert("일치하는 아파트 정보를 찾을 수 없습니다. 주소를 더 구체적으로 적어주시거나 '평수 직접 입력'을 이용해 주세요.");
+        alert("일치하는 아파트 정보를 찾지 못했습니다. '평수로 계산하기'를 이용하시거나 주소를 더 자세히 입력해 주세요.");
         setCurrentStep(Step.LOCATION);
       } else {
         setAddressInfo({ fullAddress: result.fullAddress, apartmentName: '' });
@@ -77,18 +78,19 @@ const Calculator: React.FC = () => {
         setCurrentStep(Step.APARTMENT_LIST);
       }
     } catch (error: any) {
-      console.error("Gemini 상세 에러:", error);
+      // 진단을 위한 상세 로그 출력
+      console.error("[Gemini Diagnostic Error Object]:", error);
       
-      let errorMsg = "검색 기능이 작동하지 않습니다.";
-      if (error.message?.includes("403") || error.message?.includes("permission")) {
-        errorMsg += "\n\n[진단결과: 권한 부족]\nGoogle AI Studio에서 'Google Search' 기능은 결제 수단이 등록된 유료 프로젝트에서만 작동합니다. 구글 클라우드 빌링 설정을 확인해 주세요.";
-      } else if (error.message?.includes("API key not found") || !process.env.API_KEY) {
-        errorMsg += "\n\n[진단결과: 키 누락]\nAPI_KEY가 정상적으로 인식되지 않았습니다. Vercel 환경 변수명과 Redeploy 여부를 확인하세요.";
-      } else {
-        errorMsg += "\n\n잠시 후 다시 시도해 주세요. 계속될 경우 평수 직접 입력을 이용해 주세요.";
+      let msg = "검색 기능 호출 중 오류가 발생했습니다.";
+      if (error.message === "API_KEY_MISSING") {
+        msg = "Vercel 환경 변수에 API_KEY가 설정되지 않았습니다. [Settings > Environment Variables]를 확인하세요.";
+      } else if (error.message?.includes("403") || error.message?.includes("permission")) {
+        msg = "구글 API 권한 에러(403)가 발생했습니다. 유료 계정이더라도 'Google Search' 기능이 해당 API 키에서 활성화되었는지 확인해 주세요.";
+      } else if (error.message?.includes("429")) {
+        msg = "할당량 초과 에러(429)입니다. 잠시 후 다시 시도해 주세요.";
       }
-      
-      alert(errorMsg);
+
+      alert(msg + "\n\n(자세한 에러 내용은 브라우저 콘솔-F12-에서 확인할 수 있습니다.)");
       setCurrentStep(Step.LOCATION);
     } finally {
       setIsSearching(false);
@@ -100,24 +102,24 @@ const Calculator: React.FC = () => {
     setCurrentStep(Step.LOADING);
     setSources([]);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호 가구의 공급 면적(평수)을 검색해서 숫자만 알려줘.`,
+        model: 'gemini-3-pro-preview',
+        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호 가구의 정확한 공급 평수를 알려줘.`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              pyeong: { type: Type.NUMBER, description: "공급 평수 숫자만 (예: 33)" }
+              pyeong: { type: Type.NUMBER }
             },
             required: ["pyeong"]
           }
         }
       });
 
-      const result = safeParseJSON(response.text || "{}");
+      const result = safeParseJSON(response.text || "");
       const pyeong = result?.pyeong || 33;
 
       const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
@@ -133,8 +135,8 @@ const Calculator: React.FC = () => {
       });
       setCurrentStep(Step.RESULT);
     } catch (error) {
-      console.error("분석 에러:", error);
-      // 에러 시에도 흐름이 끊기지 않게 기본값 33평으로 진행
+      console.error("[Analyze Unit Error]:", error);
+      // 에러 시 사용자 경험 보호를 위해 기본값으로 결과 도출
       setSelectedApt({
         name: selectedAptName, pyeong: 33, address: addressInfo.fullAddress,
         buildingNo, unitNo, isSimple: false
@@ -190,7 +192,7 @@ const Calculator: React.FC = () => {
           {currentStep === Step.APARTMENT_LIST && "조회된 단지 목록 중 하나를 선택해 주세요."}
           {currentStep === Step.SIMPLE_INPUT && "거주하시는 가구의 공급 평수를 선택해 주세요."}
           {currentStep === Step.DETAIL_UNIT && "정확한 평면 분석을 위해 동/호를 입력해 주세요."}
-          {currentStep === Step.LOADING && (isSearching ? "실시간 검색 엔진을 가동 중입니다." : "가구 평면 데이터를 분석 중입니다.")}
+          {currentStep === Step.LOADING && "AI가 최신 데이터를 기반으로 주소지를 분석하고 있습니다."}
           {currentStep === Step.RESULT && "KCC 정품 자재 및 시공비가 포함된 예상 견적입니다."}
         </div>
       </div>
