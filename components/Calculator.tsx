@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { ArrowLeft, CheckCircle2, Search, Building2, MapPin, Loader2, Hash, LayoutPanelLeft, ExternalLink, Calculator as CalcIcon, Zap, X, AlertCircle } from 'lucide-react';
 import { Step, ApartmentInfo } from '../types';
@@ -19,6 +19,24 @@ const Calculator: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [sources, setSources] = useState<{title?: string, uri?: string}[]>([]);
 
+  // AI 응답에서 JSON만 안전하게 추출하는 함수
+  const safeParseJSON = (text: string) => {
+    try {
+      // 1. ```json 블록 제거
+      let cleaned = text.replace(/```json|```/g, "").trim();
+      // 2. 혹시 앞뒤에 텍스트가 섞여 있다면 JSON 시작과 끝 위치 확인
+      const startIdx = cleaned.indexOf('{');
+      const endIdx = cleaned.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) {
+        cleaned = cleaned.substring(startIdx, endIdx + 1);
+      }
+      return JSON.parse(cleaned);
+    } catch (e) {
+      console.error("JSON 파싱 실패. 원문:", text);
+      return null;
+    }
+  };
+
   // 1. AI 기반 통합 주소 및 아파트 검색
   const handleAddressSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -28,11 +46,12 @@ const Calculator: React.FC = () => {
     setCurrentStep(Step.LOADING);
     
     try {
-      // 새로운 인스턴스 생성 (최신 API 키 반영 보장)
+      // 검색 업무에는 속도가 빠르고 안정적인 Flash 모델 권장
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 정확한 도로명 주소와 그 주소에 있는 아파트 단지 리스트를 찾아줘. 검색 결과가 없으면 apartments에 빈 배열을 반환해.`,
+        model: 'gemini-3-flash-preview',
+        contents: `사용자가 입력한 '${searchQuery}'에 해당하는 한국의 실제 도로명 주소와 그 주소 내의 아파트 단지 목록을 JSON으로 알려줘. 
+                  예시: {"fullAddress": "서울특별시 성동구 왕십리로 83-21", "apartments": ["아크로서울포레스트"]}`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
@@ -47,10 +66,10 @@ const Calculator: React.FC = () => {
         }
       });
 
-      const result = JSON.parse(response.text || "{}");
+      const result = safeParseJSON(response.text || "{}");
       
-      if (!result.apartments || result.apartments.length === 0) {
-        alert("해당 검색어와 일치하는 아파트 단지를 찾을 수 없습니다. 평수로 계산하기를 이용해 주세요.");
+      if (!result || !result.apartments || result.apartments.length === 0) {
+        alert("일치하는 아파트 정보를 찾을 수 없습니다. 주소를 더 구체적으로 적어주시거나 '평수 직접 입력'을 이용해 주세요.");
         setCurrentStep(Step.LOCATION);
       } else {
         setAddressInfo({ fullAddress: result.fullAddress, apartmentName: '' });
@@ -58,15 +77,15 @@ const Calculator: React.FC = () => {
         setCurrentStep(Step.APARTMENT_LIST);
       }
     } catch (error: any) {
-      console.error("Gemini Search Error:", error);
-      let errorMsg = "검색 중 오류가 발생했습니다. ";
+      console.error("Gemini 상세 에러:", error);
       
-      if (error.message?.includes("API key")) {
-        errorMsg += "\n- Vercel 환경 변수에 'API_KEY'가 올바른지 확인하고 'Redeploy'를 진행했는지 확인해 주세요.";
-      } else if (error.message?.includes("403")) {
-        errorMsg += "\n- API 키에 Google Search 기능 권한이 활성화되어 있는지 확인해 주세요.";
+      let errorMsg = "검색 기능이 작동하지 않습니다.";
+      if (error.message?.includes("403") || error.message?.includes("permission")) {
+        errorMsg += "\n\n[진단결과: 권한 부족]\nGoogle AI Studio에서 'Google Search' 기능은 결제 수단이 등록된 유료 프로젝트에서만 작동합니다. 구글 클라우드 빌링 설정을 확인해 주세요.";
+      } else if (error.message?.includes("API key not found") || !process.env.API_KEY) {
+        errorMsg += "\n\n[진단결과: 키 누락]\nAPI_KEY가 정상적으로 인식되지 않았습니다. Vercel 환경 변수명과 Redeploy 여부를 확인하세요.";
       } else {
-        errorMsg += "\n- 일시적인 네트워크 오류일 수 있으니 잠시 후 다시 시도해 주세요.";
+        errorMsg += "\n\n잠시 후 다시 시도해 주세요. 계속될 경우 평수 직접 입력을 이용해 주세요.";
       }
       
       alert(errorMsg);
@@ -83,8 +102,8 @@ const Calculator: React.FC = () => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호의 정확한 평수(전용면적 또는 공급면적) 정보를 알려줘.`,
+        model: 'gemini-3-flash-preview',
+        contents: `${addressInfo.fullAddress} ${selectedAptName} ${buildingNo}동 ${unitNo}호 가구의 공급 면적(평수)을 검색해서 숫자만 알려줘.`,
         config: { 
           tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
@@ -98,8 +117,8 @@ const Calculator: React.FC = () => {
         }
       });
 
-      const result = JSON.parse(response.text || "{}");
-      const pyeong = result.pyeong || 33;
+      const result = safeParseJSON(response.text || "{}");
+      const pyeong = result?.pyeong || 33;
 
       const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
       if (groundingChunks) {
@@ -114,8 +133,8 @@ const Calculator: React.FC = () => {
       });
       setCurrentStep(Step.RESULT);
     } catch (error) {
-      console.error("Analyze Error:", error);
-      // 에러 시 기본 평수(33)로 진행하여 사용자 경험 유지
+      console.error("분석 에러:", error);
+      // 에러 시에도 흐름이 끊기지 않게 기본값 33평으로 진행
       setSelectedApt({
         name: selectedAptName, pyeong: 33, address: addressInfo.fullAddress,
         buildingNo, unitNo, isSimple: false
@@ -168,14 +187,10 @@ const Calculator: React.FC = () => {
               <span className="font-bold text-blue-600">조회가 되지 않을 경우 평수로 계산하기로 진행하세요.</span>
             </div>
           )}
-          {currentStep === Step.APARTMENT_LIST && (
-            <div className="flex flex-col gap-1">
-              <span>조회된 단지 목록 중 하나를 선택해 주세요.</span>
-            </div>
-          )}
+          {currentStep === Step.APARTMENT_LIST && "조회된 단지 목록 중 하나를 선택해 주세요."}
           {currentStep === Step.SIMPLE_INPUT && "거주하시는 가구의 공급 평수를 선택해 주세요."}
           {currentStep === Step.DETAIL_UNIT && "정확한 평면 분석을 위해 동/호를 입력해 주세요."}
-          {currentStep === Step.LOADING && (isSearching ? "주소지의 아파트 정보를 실시간 검색 중입니다." : "가구 평면 및 자재 견적을 분석 중입니다.")}
+          {currentStep === Step.LOADING && (isSearching ? "실시간 검색 엔진을 가동 중입니다." : "가구 평면 데이터를 분석 중입니다.")}
           {currentStep === Step.RESULT && "KCC 정품 자재 및 시공비가 포함된 예상 견적입니다."}
         </div>
       </div>
@@ -242,7 +257,6 @@ const Calculator: React.FC = () => {
                 </button>
               ))}
             </div>
-            
             <button onClick={() => setCurrentStep(Step.LOCATION)} className="w-full py-3 text-gray-400 text-xs font-bold hover:underline flex items-center justify-center gap-1">
               <ArrowLeft size={12} /> 다시 검색하기
             </button>
@@ -303,7 +317,7 @@ const Calculator: React.FC = () => {
               <div className="w-24 h-24 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
               <LayoutPanelLeft className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-blue-600" size={32} />
             </div>
-            <h3 className="text-xl font-black text-gray-800 mb-2">{isSearching ? "주소 정보를 찾는 중..." : "견적 데이터 분석 중..."}</h3>
+            <h3 className="text-xl font-black text-gray-800 mb-2">{isSearching ? "실시간 검색 엔진 가동 중..." : "견적 데이터 분석 중..."}</h3>
             <div className="space-y-2 text-sm text-gray-500 font-medium">
               <p>• 주소지 기반 평면 데이터 매칭</p>
               <p>• 가구별 창호 레이아웃 시뮬레이션</p>
